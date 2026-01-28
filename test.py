@@ -2,48 +2,6 @@ import pandas as pd
 import numpy as np
 import faiss
 import json
-import ast
-
-
-def convert_embedding_to_array(embedding):
-    """
-    Convert embedding from various formats to numpy array.
-    
-    Parameters:
-    -----------
-    embedding : str, list, np.ndarray, or object
-        Embedding in any format
-    
-    Returns:
-    --------
-    np.ndarray : Numpy array of the embedding
-    """
-    # If it's already a numpy array
-    if isinstance(embedding, np.ndarray):
-        return embedding
-    
-    # If it's a string representation of a list
-    if isinstance(embedding, str):
-        try:
-            # Try to evaluate the string as a Python literal
-            embedding = ast.literal_eval(embedding)
-        except:
-            # If that fails, try json.loads
-            try:
-                embedding = json.loads(embedding)
-            except:
-                raise ValueError(f"Cannot parse embedding string: {embedding[:100]}...")
-    
-    # If it's a list, convert to numpy array
-    if isinstance(embedding, list):
-        return np.array(embedding, dtype='float32')
-    
-    # If it's some other object with tolist() method
-    if hasattr(embedding, 'tolist'):
-        return np.array(embedding.tolist(), dtype='float32')
-    
-    # Last resort - try direct conversion
-    return np.array(embedding, dtype='float32')
 
 
 def create_faiss_index(master_df):
@@ -64,22 +22,20 @@ def create_faiss_index(master_df):
         - dimension: Embedding dimension
     """
     
-    print("Converting master embeddings to numpy arrays...")
-    
-    # Convert all embeddings to numpy arrays
+    # Convert embedding to numpy array
+    # Handle both list and already-numpy-array formats
     embeddings_list = []
-    for idx, emb in enumerate(master_df['Procedure_decription_embeddingvector']):
-        try:
-            emb_array = convert_embedding_to_array(emb)
-            embeddings_list.append(emb_array)
-        except Exception as e:
-            print(f"Warning: Error converting embedding at index {idx}: {e}")
-            raise
+    for emb in master_df['Procedure_decription_embeddingvector']:
+        if isinstance(emb, str):
+            # If stored as string, evaluate it
+            emb = eval(emb)
+        if isinstance(emb, list):
+            embeddings_list.append(emb)
+        else:
+            # Already numpy array
+            embeddings_list.append(emb.tolist() if hasattr(emb, 'tolist') else emb)
     
-    # Stack all embeddings into a 2D array
-    master_embeddings = np.vstack(embeddings_list).astype('float32')
-    
-    print(f"Master embeddings shape: {master_embeddings.shape}")
+    master_embeddings = np.array(embeddings_list, dtype='float32')
     
     # Normalize vectors for cosine similarity
     faiss.normalize_L2(master_embeddings)
@@ -106,7 +62,7 @@ def search_similar_procedures(test_embedding, index, master_df, top_k=5):
     
     Parameters:
     -----------
-    test_embedding : list, numpy array, string, or object
+    test_embedding : list or numpy array or string
         Single embedding vector from test data
     index : faiss.Index
         Pre-built FAISS index from create_faiss_index()
@@ -121,14 +77,15 @@ def search_similar_procedures(test_embedding, index, master_df, top_k=5):
     """
     
     # Convert test embedding to numpy array
-    test_embedding_array = convert_embedding_to_array(test_embedding)
+    # Handle both list and string formats
+    if isinstance(test_embedding, str):
+        test_embedding = eval(test_embedding)
     
-    # Reshape to 2D array (1, dimension)
-    if test_embedding_array.ndim == 1:
-        test_embedding_array = test_embedding_array.reshape(1, -1)
-    
-    # Ensure float32 dtype
-    test_embedding_array = test_embedding_array.astype('float32')
+    if isinstance(test_embedding, list):
+        test_embedding_array = np.array([test_embedding], dtype='float32')
+    else:
+        # Already numpy array
+        test_embedding_array = np.array([test_embedding.tolist() if hasattr(test_embedding, 'tolist') else test_embedding], dtype='float32')
     
     # Normalize for cosine similarity
     faiss.normalize_L2(test_embedding_array)
@@ -157,47 +114,38 @@ def search_similar_procedures(test_embedding, index, master_df, top_k=5):
 # USAGE EXAMPLE
 # ============================================================================
 
-print("="*70)
-print("FAISS Similarity Search for Medical Procedures")
-print("="*70)
-
-# Check data types
-print(f"\nMaster embedding dtype: {master_df['Procedure_decription_embeddingvector'].dtype}")
-print(f"Test embedding dtype: {test_df['client_procedure_description_embeddingvector'].dtype}")
-
-# Check first embedding sample
-print(f"\nSample master embedding type: {type(master_df.iloc[0]['Procedure_decription_embeddingvector'])}")
-print(f"Sample test embedding type: {type(test_df.iloc[0]['client_procedure_description_embeddingvector'])}")
-
 # STEP 1: Create FAISS index ONE TIME (do this once at the beginning)
-print("\n" + "="*70)
-print("STEP 1: Creating FAISS index from master_df...")
-print("="*70)
+print("Creating FAISS index from master_df...")
 faiss_index, master_embeddings, embedding_dim = create_faiss_index(master_df)
 print()
 
 # STEP 2: Now you can search multiple times without rebuilding the index
 
 # Search for first test record
-print("="*70)
-print("STEP 2: Searching for first test record (iloc[0])...")
-print("="*70)
+print("Searching for first test record (iloc[0])...")
 first_test_embedding = test_df.iloc[0]['client_procedure_description_embeddingvector']
 results_1 = search_similar_procedures(first_test_embedding, faiss_index, master_df, top_k=5)
 
-print(f"\nTest Procedure: {test_df.iloc[0]['client_procedure_name']}")
-print(f"Client: {test_df.iloc[0]['client_name']}")
-print(f"Description: {test_df.iloc[0]['client_procedure_description']}")
+print(f"Test Procedure: {test_df.iloc[0]['client_procedure_name']}")
 print("\nTop 5 Matches:")
 for match in results_1:
-    print(f"  Rank {match['rank']}: {match['match_procedure_name']} "
-          f"(Similarity: {match['similarity']:.4f}, Level: {match['match_level']})")
+    print(f"  Rank {match['rank']}: {match['match_procedure_name']} (Similarity: {match['similarity']:.4f})")
 print()
 
+# Search for second test record (if exists)
+if len(test_df) > 1:
+    print("Searching for second test record (iloc[1])...")
+    second_test_embedding = test_df.iloc[1]['client_procedure_description_embeddingvector']
+    results_2 = search_similar_procedures(second_test_embedding, faiss_index, master_df, top_k=5)
+    
+    print(f"Test Procedure: {test_df.iloc[1]['client_procedure_name']}")
+    print("\nTop 5 Matches:")
+    for match in results_2:
+        print(f"  Rank {match['rank']}: {match['match_procedure_name']} (Similarity: {match['similarity']:.4f})")
+    print()
+
 # Search for all test records
-print("="*70)
-print("STEP 3: Searching for ALL test records...")
-print("="*70)
+print("Searching for ALL test records...")
 all_results = []
 for idx in range(len(test_df)):
     test_embedding = test_df.iloc[idx]['client_procedure_description_embeddingvector']
@@ -209,7 +157,7 @@ print(f"\n✓ Completed! Processed {len(test_df)} test records")
 
 # Display detailed results for first record
 print("\n" + "="*70)
-print("Detailed JSON results for first test record:")
+print("Detailed results for first test record:")
 print("="*70)
 print(json.dumps(all_results[0], indent=2))
 
