@@ -116,3 +116,108 @@ def search_procedure(input_procedure, df, exact_threshold=85):
             print(f"{i+1}. {match['procedure']}")
         return None
 
+
+
+
+
+
+import pandas as pd
+import numpy as np
+import faiss
+import json
+
+
+def find_similar_procedures_single(test_embedding, master_df, top_k=5):
+    """
+    Find top K similar procedures for a single test record using FAISS.
+    
+    Parameters:
+    -----------
+    test_embedding : list or numpy array
+        Single embedding vector from test data
+    master_df : pandas.DataFrame
+        DataFrame with 'Procedure_decription_embeddingvector' column
+    top_k : int, default=5
+        Number of top similar results to return
+    
+    Returns:
+    --------
+    list : List of dictionaries containing top_k matches
+    """
+    
+    # Convert embedding to numpy array
+    master_embeddings = np.array(master_df['Procedure_decription_embeddingvector'].tolist()).astype('float32')
+    test_embedding_array = np.array([test_embedding]).astype('float32')
+    
+    # Normalize vectors for cosine similarity
+    faiss.normalize_L2(master_embeddings)
+    faiss.normalize_L2(test_embedding_array)
+    
+    # Get the dimension of embeddings
+    dimension = master_embeddings.shape[1]
+    
+    # Create FAISS index
+    index = faiss.IndexFlatIP(dimension)
+    
+    # Add master embeddings to the index
+    index.add(master_embeddings)
+    
+    # Search for top_k similar vectors
+    similarities, indices = index.search(test_embedding_array, top_k)
+    
+    # Prepare results
+    results = []
+    
+    for rank, (master_idx, similarity) in enumerate(zip(indices[0], similarities[0]), start=1):
+        result = {
+            'match_procedure_name': master_df.iloc[master_idx]['procedure name'],
+            'matching_score': float(master_df.iloc[master_idx]['Score']),
+            'match_procedure_description': master_df.iloc[master_idx]['Procedure_description'],
+            'match_level': master_df.iloc[master_idx]['Level'],
+            'similarity': float(similarity),
+            'rank': rank
+        }
+        results.append(result)
+    
+    return results
+
+
+# ============================================================================
+# Usage: Get results for first row of test_df (iloc[0])
+# ============================================================================
+
+# Extract the first test record's embedding
+first_test_embedding = test_df.iloc[0]['client_procedure_description_embeddingvector']
+
+# Get top 5 matches for the first test record
+results = find_similar_procedures_single(first_test_embedding, master_df, top_k=5)
+
+# Display the results
+print("="*70)
+print(f"Test Procedure: {test_df.iloc[0]['client_procedure_name']}")
+print(f"Client: {test_df.iloc[0]['client_name']}")
+print(f"Description: {test_df.iloc[0]['client_procedure_description']}")
+print("="*70)
+
+print(f"\nTop 5 Similar Procedures:\n")
+
+for match in results:
+    print(f"Rank {match['rank']}:")
+    print(f"  Procedure Name: {match['match_procedure_name']}")
+    print(f"  Similarity Score: {match['similarity']:.4f}")
+    print(f"  Matching Score: {match['matching_score']}")
+    print(f"  Level: {match['match_level']}")
+    print(f"  Description: {match['match_procedure_description']}")
+    print()
+
+# Display as JSON
+print("\n" + "="*70)
+print("Results in JSON format:")
+print("="*70)
+print(json.dumps(results, indent=2))
+
+# Save to file (optional)
+with open('first_test_result.json', 'w') as f:
+    json.dump(results, f, indent=2)
+
+print("\n✓ Results saved to 'first_test_result.json'")
