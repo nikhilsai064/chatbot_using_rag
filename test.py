@@ -48,3 +48,37 @@ def search_similar_procedures(client_embedding, index, master_df, top_k=5):
         results.append(entry)
     
     return "\n".join([json.dumps(res) for res in results])
+
+
+
+
+
+def search_similar_procedures(client_embedding, index, master_df, top_k=5):
+    # Prepare and normalize query
+    query_vector = np.array([client_embedding]).astype('float32')
+    faiss.normalize_L2(query_vector)
+    
+    # Search: similarities contains the cosine scores, indices contains row positions
+    similarities, indices = index.search(query_vector, top_k)
+    
+    # FAISS IndexFlatIP already returns results in descending order of similarity
+    results = []
+    for rank_idx, (idx, score) in enumerate(zip(indices[0], similarities[0]), start=1):
+        # Safety check: FAISS returns -1 if it can't find enough neighbors
+        if idx == -1:
+            continue
+            
+        match_row = master_df.iloc[idx]
+        
+        entry = {
+            "match_procedure_name": match_row['procedure name'],
+            "matching_score": float(match_row['Score']),
+            "cosine_similarity": round(float(score), 4),
+            "match_procedure_description": match_row['Procedure_description'],
+            "match_level": match_row['Level'],
+            "rank": rank_idx
+        }
+        results.append(entry)
+    
+    # Join into JSONL format
+    return "\n".join([json.dumps(res) for res in results])
