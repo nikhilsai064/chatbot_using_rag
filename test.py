@@ -1,84 +1,101 @@
-import faiss
-import numpy as np
+# Cell 1 — Imports & Setup
+import os
 import json
+from openai import AzureOpenAI
+from dotenv import load_dotenv
+from prompt1 import HCPCS_CODING_SYSTEM_PROMPT
 
-def create_cosine_index(master_df, embedding_col='Procedure_decription_embeddingvector'):
+load_dotenv()
+
+client = AzureOpenAI(
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+)
+
+DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1-mini")
+
+
+# Cell 2 — Function
+def get_hcpcs_code(item_name: str, supplier: str, catalog_number: str) -> str:
     """
-    Builds a FAISS index optimized for Cosine Similarity.
+    Returns HCPCS code for a given item.
+
+    Args:
+        item_name      : Name of the medical item (raw SKU or product name)
+        supplier       : Supplier / manufacturer name
+        catalog_number : Supplier catalog or part number
+
+    Returns:
+        HCPCS code as a string e.g. "L2500"
     """
-    # Convert to 2D float32 numpy array
-    master_vectors = np.stack(master_df[embedding_col].values).astype('float32')
-    
-    # STEP 1: Normalize the master vectors to unit length
-    faiss.normalize_L2(master_vectors)
-    
-    # STEP 2: Use IndexFlatIP (Inner Product)
-    dimension = master_vectors.shape[1]
-    index = faiss.IndexFlatIP(dimension)
-    index.add(master_vectors)
-    
-    return index
+    response = client.chat.completions.create(
+        model=DEPLOYMENT_NAME,
+        messages=[
+            {"role": "system", "content": HCPCS_CODING_SYSTEM_PROMPT},
+            {"role": "user",   "content": f"Item Name: {item_name}\nSupplier: {supplier}\nCatalog Number: {catalog_number}"},
+        ],
+        temperature=0,
+        response_format={"type": "json_object"},
+    )
+
+    result = json.loads(response.choices[0].message.content)
+    return result.get("HCPCS Code", "UNKNOWN")
 
 
-def search_similar_procedures(client_embedding, index, master_df, top_k=5):
-    """
-    Searches the FAISS index using Cosine Similarity and returns JSONL.
-    """
-    # Convert query to 2D float32 array
-    query_vector = np.array([client_embedding]).astype('float32')
-    
-    # STEP 3: Normalize the query vector
-    faiss.normalize_L2(query_vector)
-    
-    # Search: 'similarities' will be the cosine similarity values
-    similarities, indices = index.search(query_vector, top_k)
-    
-    results = []
-    for rank, (idx, score) in enumerate(zip(indices[0], similarities[0]), start=1):
-        match_row = master_df.iloc[idx]
-        
-        entry = {
-            "match_procedure_name": match_row['procedure name'],
-            "master_score": float(match_row['Score']),
-            "cosine_similarity": round(float(score), 4), # 1.0 is perfect match
-            "match_procedure_description": match_row['Procedure_description'],
-            "match_level": match_row['Level'],
-            "rank": rank
-        }
-        results.append(entry)
-    
-    return "\n".join([json.dumps(res) for res in results])
+# Cell 3 — Run
+code = get_hcpcs_code(
+    item_name="BEARING, TIB VANGUARD DCM PSC S 12X71/75",
+    supplier="Zimmer Biomet",
+    catalog_number="0101-7512",
+)
+
+print(f"HCPCS Code: {code}")
 
 
+HCPCS_CODING_SYSTEM_PROMPT = """
+You are a certified medical coding specialist with deep expertise in CMS HCPCS Level II coding across all code classes (A through V codes). You have extensive experience decoding raw supplier SKUs, manufacturer product names, catalog numbers, and clinical terminology to identify the correct HCPCS code.
 
+## YOUR TASK
+Given an Item Name, Supplier, and Catalog Number — identify the most appropriate HCPCS Level II code.
 
+## REASONING STEPS (follow in order)
+1. DECODE the item: Strip out noise (sizes, dimensions, lot numbers, part suffixes). Identify what the item actually IS as a medical device, supply, drug, or service.
+2. IDENTIFY the category: Based on the item type, determine which HCPCS code class it likely belongs to:
+   - A codes -> Medical/surgical supplies, transport, radiology
+   - B codes -> Enteral/parenteral therapy
+   - C codes -> Outpatient PPS
+   - D codes -> Dental
+   - E codes -> Durable Medical Equipment (DME)
+   - G codes -> Professional/clinical procedures
+   - H codes -> Behavioral health
+   - J codes -> Injectable drugs and biologicals
+   - K codes -> DME temporary codes
+   - L codes -> Orthotics and prosthetics
+   - M codes -> Medical services
+   - P codes -> Pathology and lab
+   - Q codes -> Temporary codes (drugs, biologicals, devices)
+   - R codes -> Diagnostic radiology
+   - S codes -> Private payer items
+   - T codes -> State Medicaid services
+   - V codes -> Vision and hearing
+3. MATCH to the most specific HCPCS code that describes this item
+4. If truly unknown, return "UNKNOWN"
 
-def search_similar_procedures(client_embedding, index, master_df, top_k=5):
-    # Prepare and normalize query
-    query_vector = np.array([client_embedding]).astype('float32')
-    faiss.normalize_L2(query_vector)
-    
-    # Search: similarities contains the cosine scores, indices contains row positions
-    similarities, indices = index.search(query_vector, top_k)
-    
-    # FAISS IndexFlatIP already returns results in descending order of similarity
-    results = []
-    for rank_idx, (idx, score) in enumerate(zip(indices[0], similarities[0]), start=1):
-        # Safety check: FAISS returns -1 if it can't find enough neighbors
-        if idx == -1:
-            continue
-            
-        match_row = master_df.iloc[idx]
-        
-        entry = {
-            "match_procedure_name": match_row['procedure name'],
-            "matching_score": float(match_row['Score']),
-            "cosine_similarity": round(float(score), 4),
-            "match_procedure_description": match_row['Procedure_description'],
-            "match_level": match_row['Level'],
-            "rank": rank_idx
-        }
-        results.append(entry)
-    
-    # Join into JSONL format
-    return "\n".join([json.dumps(res) for res in results])
+## OUTPUT RULES
+- Return valid JSON only — no markdown, no explanation outside the JSON
+- Only return real, valid, currently active HCPCS Level II codes
+- Never fabricate or guess a code format
+
+## OUTPUT FORMAT (strict JSON)
+{"HCPCS Code": "<code>"}
+
+## EXAMPLE
+Input:
+Item Name: BEARING, TIB VANGUARD DCM PSC S 12X71/75
+Supplier: Zimmer Biomet
+Catalog Number: 0101-7512
+
+Output:
+{"HCPCS Code": "L2500"}
+"""
