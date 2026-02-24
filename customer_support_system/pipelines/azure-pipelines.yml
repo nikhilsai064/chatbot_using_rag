@@ -1,0 +1,63 @@
+trigger:
+  branches:
+    include:
+      - main  # or your default branch
+
+variables:
+  RESOURCE_GROUP: "fastapi-rg"
+  LOCATION: "eastus"
+  ACR_NAME: "fastapiacr123"   # Must match Terraform variable
+  IMAGE_NAME: "fastapi"
+  IMAGE_TAG: "latest"
+  TERRAFORM_DIR: "terraform"  # Path to your Terraform files
+
+stages:
+- stage: BuildPushDeploy
+  displayName: Build, Push Docker, Deploy Terraform
+  jobs:
+  - job: BuildPushDeployJob
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    # 1. Checkout code
+    - checkout: self
+
+    # 2. Azure CLI login
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: '<Your-Service-Connection-Name>'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo "Logged into Azure"
+
+    # 3. Build Docker image
+    - task: Docker@2
+      displayName: Build Docker Image
+      inputs:
+        containerRegistry: '$(ACR_NAME)'
+        repository: '$(IMAGE_NAME)'
+        command: 'buildAndPush'
+        Dockerfile: '**/Dockerfile'
+        tags: |
+          $(IMAGE_TAG)
+
+    # 4. Install Terraform
+    - task: UseTerraform@0
+      inputs:
+        terraformVersion: '1.5.7'
+
+    # 5. Terraform Init
+    - script: |
+        cd $(TERRAFORM_DIR)
+        terraform init
+      displayName: Terraform Init
+
+    # 6. Terraform Apply
+    - script: |
+        cd $(TERRAFORM_DIR)
+        terraform apply -auto-approve \
+          -var "docker_image_name=$(IMAGE_NAME)" \
+          -var "docker_image_tag=$(IMAGE_TAG)" \
+          -var "acr_name=$(ACR_NAME)"
+      displayName: Terraform Apply
